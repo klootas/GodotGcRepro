@@ -1,4 +1,4 @@
-# Exports the project with AOT and runs the repro headless, without and with the workaround.
+# Exports the project with AOT and runs both repros headless, without and with the workaround.
 # Usage: .\export_and_run.ps1 -GodotExe "C:\Path\To\Godot_v4.7.2-stable_mono_win64.exe" [-SkipExport]
 param(
     [Parameter(Mandatory = $true)][string]$GodotExe,
@@ -30,3 +30,5 @@ function Run-Repro($name) {
 
 Run-Repro instantiate
 Run-Repro instantiate-keepalive
+Run-Repro reuse
+Run-Repro reuse-keepalive
