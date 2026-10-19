@@ -1,0 +1,18 @@
+[gd_scene format=3 uid="uid://cladtqanmdhg2"]
+
+[ext_resource type="Script" uid="uid://b60qr0j06coo" path="res://InstantiatedScene.cs" id="1_script"]
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_1"]
+bg_color = Color(0.2, 0.4, 0.6, 1)
+
+[node name="InstantiatedScene" type="Node2D" unique_id=481141181]
+script = ExtResource("1_script")
+
+[node name="Panel1" type="Panel" parent="." unique_id=932735914]
+offset_left = 4.0
+offset_top = 3.0
+theme_override_styles/panel = SubResource("StyleBoxFlat_1")
+
+[node name="Label1" type="Label" parent="Panel1" unique_id=2043469612]
+layout_mode = 0
+text = "Node number 1 of the instantiated scene"
