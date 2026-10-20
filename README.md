@@ -26,10 +26,11 @@ The result is reads from freed memory, for example:
 ERROR: Cannot get class ''.
    at: _instantiate_internal (core/object/class_db.cpp:587)
 WARNING: Node  of type  cannot be created. A placeholder will be created instead.
-ERROR: FATAL: Index p_index = 2 is out of bounds (size() = 0).
 ```
 
 The process then usually crashes with an access violation (`0xC0000005`).
+
+In a real game we also saw `ERROR: FATAL: Index p_index = 2 is out of bounds (size() = 0).` (from `core/templates/cowdata.h`). It went away with the workaround below, so it's most likely the same bug: which error you get depends on what `Instantiate()` reads first from the freed scene. This project doesn't produce that one.
 
 It doesn't happen in Debug builds or with a debugger attached, because locals are kept alive until the method returns there. With the regular JIT it is rare at first, because methods run unoptimized (tier 0) until they've been called a few dozen times. After that they're optimized and the window is open in a JIT build too (with tiered compilation turned off, a JIT export crashes right away like AOT). AOT builds are fully optimized from the start, so that's where it shows up immediately.
 
