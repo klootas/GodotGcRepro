@@ -97,10 +97,10 @@ It loads `ReusedScene.tscn` (a single button) 50 times per frame for 20 seconds,
 
 Same export as repro 1, then:
 
-- `GodotGcRepro.exe --headless -- --repro=reuse`: logs "Handle is not initialized" and then usually aborts (exit code `-1073740286`), or exits with code 1 if it survives to the end.
+- `GodotGcRepro.exe --headless -- --repro=reuse`: logs "Handle is not initialized" and then usually aborts (exit code `-1073740286`), or exits with code 1 if it survives to the end. Occasionally it hangs instead and never exits (a normal run takes 20 seconds).
 - `GodotGcRepro.exe --headless -- --repro=reuse-keepalive`: keeps a reference to the loaded scene. About 90,000 loads, no errors, exit code 0.
 
-In our runs: 5 out of 5 failed without the workaround (3 aborted, 2 logged the error), and 5 out of 5 ran cleanly with it.
+In our runs: 10 out of 10 failed without the workaround (4 logged the error, 5 aborted, 1 hung), and 10 out of 10 ran cleanly with it.
 
 ## The workaround
 
