@@ -5,7 +5,7 @@ A minimal Godot 4.7.2 (.NET) project with two reliable repros of C# wrappers bei
 1. **`PackedScene` freed during `Instantiate()`:** crashes on the first call. Related issue: [godotengine/godot#109798](https://github.com/godotengine/godot/issues/109798)
 2. **"Handle is not initialized" in `ResourceLoader.Load` with `CacheMode.Reuse`:** fails within seconds under GC stress. Related issue: [godotengine/godot#112067](https://github.com/godotengine/godot/issues/112067)
 
-Both need an AOT export (see "Running it").
+Tested on Godot 4.7.2; repro 1 has also been seen on 4.8 beta 1. Repro 1 needs an AOT export to crash right away (see its "Running it"), while repro 2 fails in regular (JIT) release exports too.
 
 # Repro 1: `PackedScene` freed during `Instantiate()`
 
@@ -31,7 +31,7 @@ ERROR: FATAL: Index p_index = 2 is out of bounds (size() = 0).
 
 The process then usually crashes with an access violation (`0xC0000005`).
 
-It doesn't happen in Debug builds or with a debugger attached, because locals are kept alive until the method returns there. With the regular JIT it is rare, because rarely called methods run unoptimized at first (tier 0). AOT builds are fully optimized from the start, so that's where it shows up.
+It doesn't happen in Debug builds or with a debugger attached, because locals are kept alive until the method returns there. With the regular JIT it is rare at first, because methods run unoptimized (tier 0) until they've been called a few dozen times. After that they're optimized and the window is open in a JIT build too (with tiered compilation turned off, a JIT export crashes right away like AOT). AOT builds are fully optimized from the start, so that's where it shows up immediately.
 
 ## How this project makes it reliable
 
@@ -48,6 +48,8 @@ It needs an AOT export (the project has `PublishAot` set), which requires the Go
    - `GodotGcRepro.exe --headless -- --repro=instantiate-keepalive`: runs all 20 iterations, exit code 0.
 
 In our runs: 5 out of 5 crashed without the workaround, and 5 out of 5 ran cleanly with it.
+
+**It's not an AOT bug.** AOT only makes it show up right away. In a regular (JIT) export, without `PublishAot`, the first click usually doesn't crash, because the methods involved still run unoptimized (tier 0). Keep clicking "Instantiate without GC.KeepAlive" (each click instantiates the scene 20 times): once .NET has optimized the methods, it crashes there too. With `GC.KeepAlive` it never crashes, however often you click.
 
 ## The workaround
 
@@ -95,7 +97,7 @@ It loads `ReusedScene.tscn` (a single button) 50 times per frame for 20 seconds,
 
 ## Running it
 
-Same export as repro 1, then:
+Same export as repro 1 (it also fails in a regular JIT export, without `PublishAot`), then:
 
 - `GodotGcRepro.exe --headless -- --repro=reuse`: logs "Handle is not initialized" and then usually aborts (exit code `-1073740286`), or exits with code 1 if it survives to the end. Occasionally it hangs instead and never exits (a normal run takes 20 seconds).
 - `GodotGcRepro.exe --headless -- --repro=reuse-keepalive`: keeps a reference to the loaded scene. About 90,000 loads, no errors, exit code 0.
@@ -108,4 +110,8 @@ Keep a C# reference to resources you load or fetch from Godot repeatedly, so the
 
 ## Possible fix in Godot
 
-Handing out an object whose existing wrapper is being finalized needs to be safe: either create a new wrapper when the old one is gone, or keep the old one alive until the swap is done. Proposed fixes in forks are linked from #112067.
+Handing C# an object whose previous wrapper is being collected or finalized needs to be safe: either create a new wrapper when the old one is gone, or keep the old one alive until the handover is done.
+
+We haven't verified this in the engine source, but the discussion in #112067 points at the same places: `ScriptManagerBridge.SwapGCHandleForType`, where the exception is thrown, and `CSharpInstance::refcount_incremented()` together with the `// TODO: Possible data race?` in `godotsharp_internal_unmanaged_instance_binding_create_managed()`. Proposed fixes in forks are linked from the issue.
+
+This project can be used to verify a fix: with it, `--repro=reuse` should run its 20 seconds without "Handle is not initialized", as `--repro=reuse-keepalive` already does.

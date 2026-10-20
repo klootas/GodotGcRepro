@@ -185,9 +185,9 @@ public partial class Main : Control
         var box = new VBoxContainer();
         margin.AddChild(box);
 
-        box.AddChild(new Label { Text = "Instantiate() on an uncached PackedScene (run an AOT export, see README.md)" });
-        AddButton(box, "Instantiate without GC.KeepAlive (crashes when running an export)", () => Run(keepAlive: false));
-        AddButton(box, "Instantiate with GC.KeepAlive (works when running an export)", () => Run(keepAlive: true));
+        box.AddChild(new Label { Text = "Instantiate() on an uncached PackedScene (run an export, see README.md). AOT crashes on the first click; a regular (JIT) export after a few clicks, once the code is optimized", AutowrapMode = TextServer.AutowrapMode.WordSmart });
+        AddButton(box, "Instantiate without GC.KeepAlive (crashes in an export, click repeatedly if not AOT)", () => Run(keepAlive: false));
+        AddButton(box, "Instantiate with GC.KeepAlive (works, however often you click)", () => Run(keepAlive: true));
 
         box.AddChild(new Label { Text = "Loading a cached PackedScene (CacheMode.Reuse) over and over, under GC stress" });
         AddButton(box, "Load without keeping a reference (\"Handle is not initialized\", may abort)", () => StartReuse(keepAlive: false));
