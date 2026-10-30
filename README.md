@@ -1,13 +1,15 @@
 # Godot C#: wrappers collected while Godot still uses the object
 
-A minimal Godot 4.7.2 (.NET) project with two reliable repros of C# wrappers being garbage collected at the wrong moment:
+A minimal Godot (.NET) project with two reliable repros of C# wrappers being garbage collected at the wrong moment:
 
-1. **`PackedScene` freed during `Instantiate()`:** crashes on the first call. Related issue: [godotengine/godot#109798](https://github.com/godotengine/godot/issues/109798)
-2. **"Handle is not initialized" in `ResourceLoader.Load` with `CacheMode.Reuse`:** fails within seconds under GC stress. Related issue: [godotengine/godot#112067](https://github.com/godotengine/godot/issues/112067)
+1. **`PackedScene` freed during `Instantiate()`:** crashed on the first call. **Fixed in Godot 4.8 beta 2** by [godotengine/godot#124714](https://github.com/godotengine/godot/pull/124714). Related issue: [godotengine/godot#109798](https://github.com/godotengine/godot/issues/109798)
+2. **"Handle is not initialized" in `ResourceLoader.Load` with `CacheMode.Reuse`:** fails within seconds under GC stress. **Still open in Godot 4.8 beta 2.** Related issues: [godotengine/godot#112067](https://github.com/godotengine/godot/issues/112067) and [godotengine/godot#83762](https://github.com/godotengine/godot/issues/83762)
 
-Tested on Godot 4.7.2; repro 1 has also been seen on 4.8 beta 1. Repro 1 needs an AOT export to crash right away (see its "Running it"), while repro 2 fails in regular (JIT) release exports too.
+The project targets Godot 4.8 beta 2. The version for Godot 4.7.2, where repro 1 still crashes, is commit [`9aecc58`](https://github.com/klootas/GodotGcRepro/tree/9aecc58). Repro 1 needed an AOT export to crash right away (see its "Running it"), while repro 2 fails in regular (JIT) release exports too.
 
-# Repro 1: `PackedScene` freed during `Instantiate()`
+# Repro 1: `PackedScene` freed during `Instantiate()` (fixed in Godot 4.8 beta 2)
+
+This was fixed in Godot 4.8 beta 2 by [godotengine/godot#124714](https://github.com/godotengine/godot/pull/124714), which keeps the instance alive until each native call returns. The repro stays in the project as a regression test: on 4.8 beta 2 and later it should never crash. The description below is how it behaved before the fix (Godot 4.7.2 and earlier, see commit [`9aecc58`](https://github.com/klootas/GodotGcRepro/tree/9aecc58)).
 
 ## The bug
 
@@ -40,19 +42,19 @@ The root script of `InstantiatedScene.tscn` forces a GC in its constructor (`Ins
 
 ## Running it
 
-It needs an AOT export (the project has `PublishAot` set), which requires the Godot 4.7.2 .NET export templates and the Visual Studio C++ build tools. The contrast with the editor is part of the repro:
+It needs an AOT export (the project has `PublishAot` set), which requires the .NET export templates for the Godot version and the Visual Studio C++ build tools. The contrast with the editor is part of the repro:
 
 1. Run the project from the editor and click "Instantiate without GC.KeepAlive". It works: in a Debug build every local stays alive until its method returns, so the window never opens.
-2. Export with the "Windows Desktop" preset, or run `.\export_and_run.ps1 -GodotExe "<path to Godot_v4.7.2-stable_mono_win64.exe>"`, which exports and runs both repros headless, without and with their workarounds.
+2. Export with the "Windows Desktop" preset, or run `.\export_and_run.ps1 -GodotExe "<path to Godot_v4.8-beta2_mono_win64.exe>"`, which exports and runs both repros headless, without and with their workarounds.
 3. Start `Export\GodotGcRepro.exe` and click the buttons, or run it from the command line:
-   - `GodotGcRepro.exe --headless -- --repro=instantiate`: crashes on the first iteration (exit code `-1073741819`, an access violation).
+   - `GodotGcRepro.exe --headless -- --repro=instantiate`: on Godot 4.7.2 it crashed on the first iteration (exit code `-1073741819`, an access violation). On 4.8 beta 2 it runs all 20 iterations, exit code 0.
    - `GodotGcRepro.exe --headless -- --repro=instantiate-keepalive`: runs all 20 iterations, exit code 0.
 
-In our runs: 5 out of 5 crashed without the workaround, and 5 out of 5 ran cleanly with it.
+In our runs on Godot 4.7.2: 5 out of 5 crashed without the workaround, and 5 out of 5 ran cleanly with it. On Godot 4.8 beta 2: 6 out of 6 ran cleanly without the workaround.
 
 **It's not an AOT bug.** AOT only makes it show up right away. In a regular (JIT) export, without `PublishAot`, the first click usually doesn't crash, because the methods involved still run unoptimized (tier 0). Keep clicking "Instantiate without GC.KeepAlive" (each click instantiates the scene 20 times): once .NET has optimized the methods, it crashes there too. With `GC.KeepAlive` it never crashes, however often you click.
 
-## The workaround
+## The workaround (before Godot 4.8 beta 2)
 
 Keep the wrapper alive until `Instantiate()` has returned:
 
@@ -63,9 +65,9 @@ GC.KeepAlive(scene);
 
 `GC.KeepAlive` does nothing at runtime. Its only effect is that `scene` counts as used until that line, so the GC can't collect it during the call. This is the documented pattern for objects whose native handle is still in use ([GC.KeepAlive](https://learn.microsoft.com/dotnet/api/system.gc.keepalive)).
 
-## Possible fix in Godot
+## The fix in Godot
 
-The generated C# bindings could call `GC.KeepAlive(this)` (and the same for wrapper arguments) after each native call. That would close this window for every method, not just `Instantiate()`.
+[godotengine/godot#124714](https://github.com/godotengine/godot/pull/124714) makes the generated C# bindings call `GC.KeepAlive(this)` after each native call, which closes this window for every instance method, not just `Instantiate()`. Wrapper arguments aren't kept alive, so an object that's only passed as an argument (for example to a static method) still needs `GC.KeepAlive` after the call.
 
 # Repro 2: "Handle is not initialized" with `CacheMode.Reuse`
 
@@ -90,6 +92,8 @@ ERROR: System.InvalidOperationException: Handle is not initialized.
 
 `Load` then returns nothing usable, and the process often aborts shortly after (exit code `-1073740286`, a fail-fast).
 
+In #112067 the same exception is thrown from `PackedScene.Instantiate`, for a cached texture the scene references. It's the same failure: whenever Godot adds a reference to a cached object that has a C# wrapper, `CSharpInstance::refcount_incremented()` swaps the wrapper's weak handle for a strong one (`ScriptManagerBridge.SwapGCHandleForType`), and that fails if the wrapper was already collected. Here the cached object is the `PackedScene` itself, so it happens in `Load`. See also [godotengine/godot#124498](https://github.com/godotengine/godot/issues/124498) (the same failure branch, including the process abort) and [godotengine/godot#121018](https://github.com/godotengine/godot/issues/121018) (a duplicate).
+
 This is the pattern of a game creating, say, choice buttons from the same scene file over and over. We first saw it there, in a real game.
 
 ## How this project makes it reliable
@@ -103,7 +107,9 @@ Same export as repro 1 (it also fails in a regular JIT export, without `PublishA
 - `GodotGcRepro.exe --headless -- --repro=reuse`: logs "Handle is not initialized" and then usually aborts (exit code `-1073740286`), or exits with code 1 if it survives to the end. Occasionally it hangs instead and never exits (a normal run takes 20 seconds).
 - `GodotGcRepro.exe --headless -- --repro=reuse-keepalive`: keeps a reference to the loaded scene. About 90,000 loads, no errors, exit code 0.
 
-In our runs: 10 out of 10 failed without the workaround (4 logged the error, 5 aborted, 1 hung), and 10 out of 10 ran cleanly with it.
+In our runs on Godot 4.7.2: 10 out of 10 failed without the workaround (4 logged the error, 5 aborted, 1 hung), and 10 out of 10 ran cleanly with it.
+
+On Godot 4.8 beta 2, with the fix for repro 1, it still fails: 6 out of 6 runs logged 44 to 119 "Handle is not initialized" errors each, and 3 of them didn't survive (2 aborted with `-1073740286`, 1 crashed with an access violation, `-1073741819`). With the workaround, 111,950 loads ran with no errors. So keeping the instance alive during native calls doesn't cover this race.
 
 ## The workaround
 

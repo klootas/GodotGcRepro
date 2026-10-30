@@ -185,11 +185,11 @@ public partial class Main : Control
         var box = new VBoxContainer();
         margin.AddChild(box);
 
-        box.AddChild(new Label { Text = "Instantiate() on an uncached PackedScene (run an export, see README.md). AOT crashes on the first click; a regular (JIT) export after a few clicks, once the code is optimized", AutowrapMode = TextServer.AutowrapMode.WordSmart });
-        AddButton(box, "Instantiate without GC.KeepAlive (crashes in an export, click repeatedly if not AOT)", () => Run(keepAlive: false));
+        box.AddChild(new Label { Text = "Instantiate() on an uncached PackedScene (run an export, see README.md). Fixed in Godot 4.8 beta 2: before that, AOT crashed on the first click, and a regular (JIT) export after a few clicks, once the code was optimized", AutowrapMode = TextServer.AutowrapMode.WordSmart });
+        AddButton(box, "Instantiate without GC.KeepAlive (crashed before 4.8 beta 2)", () => Run(keepAlive: false));
         AddButton(box, "Instantiate with GC.KeepAlive (works, however often you click)", () => Run(keepAlive: true));
 
-        box.AddChild(new Label { Text = "Loading a cached PackedScene (CacheMode.Reuse) over and over, under GC stress" });
+        box.AddChild(new Label { Text = "Loading a cached PackedScene (CacheMode.Reuse) over and over, under GC stress (still fails in 4.8 beta 2)", AutowrapMode = TextServer.AutowrapMode.WordSmart });
         AddButton(box, "Load without keeping a reference (\"Handle is not initialized\", may abort)", () => StartReuse(keepAlive: false));
         AddButton(box, "Load while keeping a reference (works)", () => StartReuse(keepAlive: true));
 
