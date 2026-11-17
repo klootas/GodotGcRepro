@@ -1,30 +1,44 @@
 using Godot;
 using System;
-using System.Runtime.CompilerServices;
 
 /// <summary>
-/// Repros of C# wrappers being collected while Godot still uses the object (see README.md).
-/// Run them with the buttons, or from the command line: GodotGcRepro.exe -- --repro=[instantiate|instantiate-keepalive|reuse|reuse-keepalive]
+/// Repro of Godot's C# bindings failing under garbage collection (see README.md). Each runs for a while under GC stress.
+/// Run them with the buttons, or from the command line: GodotGcRepro.exe --headless -- --repro=&lt;name&gt; [--seconds=N]
+/// (names in Repros below).
 /// </summary>
 public partial class Main : Control
 {
-    const string ScenePath = "res://InstantiatedScene.tscn";
-    const int Iterations = 20;
-
     const string ReusedScenePath = "res://ReusedScene.tscn";
-    const double ReuseDurationSeconds = 20;
-    const int ReuseLoadsPerFrame = 50;
+    const string SpriteScenePath = "res://SpriteScene.tscn";
+    static double durationSeconds = 20;
+
+    record Repro(string Name, string Description, int StepsPerFrame, Action<Main> Step);
+
+    static readonly Repro[] Repros =
+    [
+        // Loading the same scene with CacheMode.Reuse over and over. Each load hands back the same cached PackedScene. C# drops
+        // its wrapper after each use, so the GC can collect it; if the next load hands the scene back while that wrapper is
+        // being finalized, Godot fails to reuse it ("Handle is not initialized", godotengine/godot#112067)
+        new("reuse", "Load a cached PackedScene (CacheMode.Reuse) without keeping a reference", 50, o => o.LoadReused(keep: false)),
+        new("reuse-keepalive", "Load a cached PackedScene while keeping a reference (the workaround)", 50, o => o.LoadReused(keep: true)),
+
+        // A dependency from the cache, with CacheMode.Ignore: the scene is fresh, but its texture is the cached one. Reading the
+        // texture from C# makes a wrapper that's dropped at once; instantiating the next copy adds a reference to the texture
+        // while that wrapper may be being finalized (the case in godotengine/godot#112067)
+        new("dependency", "Load a scene with CacheMode.Ignore and read its cached texture from C#", 50, o => o.LoadWithDependency(keep: false)),
+        new("dependency-keepalive", "The same, keeping the texture's wrapper (the workaround)", 50, o => o.LoadWithDependency(keep: true)),
+
+    ];
 
     RichTextLabel output;
     bool isCommandLineRun;
 
-    // Reuse repro state
-    bool isReusing;
-    bool reuseKeepAlive;
-    double reuseTimeLeft;
-    long reuseLoads;
+    Repro running;
+    double timeLeft;
+    long steps;
     PackedScene keptScene;
-    static int handleErrorsLogged;
+    Texture2D keptTexture;
+    static int errorsLogged;
     static System.Threading.Thread gcThread;
 
     public override void _Ready()
@@ -33,6 +47,8 @@ public partial class Main : Control
 
         foreach (var arg in OS.GetCmdlineUserArgs())
         {
+            if (arg.StartsWith("--seconds="))
+                durationSeconds = double.Parse(arg["--seconds=".Length..], System.Globalization.CultureInfo.InvariantCulture);
             if (!arg.StartsWith("--repro="))
                 continue;
 
@@ -41,105 +57,82 @@ public partial class Main : Control
         }
     }
 
-    void RunFromCommandLine(string repro)
+    void RunFromCommandLine(string name)
     {
-        switch (repro)
+        var repro = Array.Find(Repros, o => o.Name == name);
+        if (repro == null)
         {
-            case "instantiate": Run(keepAlive: false); break;
-            case "instantiate-keepalive": Run(keepAlive: true); break;
-            case "reuse": StartReuse(keepAlive: false); break;
-            case "reuse-keepalive": StartReuse(keepAlive: true); break;
-            default:
-                Log($"Unknown repro \"{repro}\"");
-                GetTree().Quit(2);
-                break;
-        }
-    }
-
-    void Run(bool keepAlive)
-    {
-        Log($"Loading and instantiating {ScenePath} {Iterations} times (GC.KeepAlive: {keepAlive})");
-
-        for (int i = 1; i <= Iterations; i++)
-        {
-            Log($"  Instantiate {i}");
-            var node = keepAlive ? LoadAndInstantiateKeptAlive(ScenePath) : LoadAndInstantiate(ScenePath);
-            AddChild(node);
-            node.Free();
+            Log($"Unknown repro \"{name}\"");
+            GetTree().Quit(2);
+            return;
         }
 
-        Log("Done, no crash");
-        if (isCommandLineRun)
-            GetTree().Quit(0);
+        Start(repro);
     }
 
-    // The bug: after Instantiate() has read the native pointer, nothing uses `scene` any more. In optimized code the GC
-    // may collect the wrapper while Instantiate() is still running, and its finalizer frees the (uncached) PackedScene.
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    static Node LoadAndInstantiate(string path)
+    void Start(Repro repro)
     {
-        var scene = (PackedScene)ResourceLoader.Load(path, "PackedScene", ResourceLoader.CacheMode.IgnoreDeep);
-        return scene.Instantiate();
-    }
-
-    // The workaround: a use of `scene` after Instantiate() keeps the wrapper alive until it has finished
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    static Node LoadAndInstantiateKeptAlive(string path)
-    {
-        var scene = (PackedScene)ResourceLoader.Load(path, "PackedScene", ResourceLoader.CacheMode.IgnoreDeep);
-        var node = scene.Instantiate();
-        GC.KeepAlive(scene);
-        return node;
-    }
-
-    // Repro 2: loading the same scene with CacheMode.Reuse over and over, while a background thread collects garbage.
-    // Each load hands back the same cached PackedScene. C# drops its wrapper after each use, so the GC can collect it;
-    // if the next load hands the scene back while that wrapper is being finalized, Godot fails to reuse it
-    // ("Handle is not initialized", godotengine/godot#112067)
-    void StartReuse(bool keepAlive)
-    {
-        if (isReusing)
+        if (running != null)
             return;
 
         StartGcThread();
-        reuseKeepAlive = keepAlive;
-        reuseTimeLeft = ReuseDurationSeconds;
-        reuseLoads = 0;
+        timeLeft = durationSeconds;
+        steps = 0;
         keptScene = null;
-        System.Threading.Interlocked.Exchange(ref handleErrorsLogged, 0);
-        isReusing = true;
+        System.Threading.Interlocked.Exchange(ref errorsLogged, 0);
+        running = repro;
 
-        Log($"Loading {ReusedScenePath} with CacheMode.Reuse {ReuseLoadsPerFrame} times per frame for {ReuseDurationSeconds} s, while a background thread collects garbage (keep a reference: {keepAlive})");
+        Log($"{repro.Name}: {repro.Description}, {repro.StepsPerFrame} times per frame for {durationSeconds} s, while a background thread collects garbage");
     }
 
     public override void _Process(double delta)
     {
-        if (!isReusing)
+        if (running == null)
             return;
 
-        for (int i = 0; i < ReuseLoadsPerFrame; i++)
-        {
-            var scene = (PackedScene)ResourceLoader.Load(ReusedScenePath, "PackedScene", ResourceLoader.CacheMode.Reuse);
-            if (reuseKeepAlive)
-                keptScene = scene; // The workaround: a wrapper that stays referenced is never finalized
+        for (int i = 0; i < running.StepsPerFrame; i++)
+            running.Step(this);
+        steps += running.StepsPerFrame;
 
-            var node = scene.Instantiate();
-            GC.KeepAlive(scene); // Not repro 1
-            AddChild(node);
-            node.Free();
-            reuseLoads++;
-        }
-
-        reuseTimeLeft -= delta;
-        if (reuseTimeLeft > 0)
+        timeLeft -= delta;
+        if (timeLeft > 0)
             return;
 
-        isReusing = false;
-        var errors = System.Threading.Volatile.Read(ref handleErrorsLogged);
-        Log($"Done: {reuseLoads} loads, {errors} \"Handle is not initialized\" errors");
+        var errors = System.Threading.Volatile.Read(ref errorsLogged);
+        if (EngineDebugger.IsActive())
+            Log($"Done: {steps} steps. Errors aren't counted when run from the editor: see the Debugger tab");
+        else
+            Log($"Done: {steps} steps, {errors} errors logged");
+        running = null;
 
         if (isCommandLineRun)
             GetTree().Quit(errors > 0 ? 1 : 0);
+    }
+
+    void LoadReused(bool keep)
+    {
+        var scene = (PackedScene)ResourceLoader.Load(ReusedScenePath, "PackedScene", ResourceLoader.CacheMode.Reuse);
+        if (keep)
+            keptScene = scene; // The workaround: a wrapper that stays referenced is never finalized
+
+        var node = scene.Instantiate();
+        GC.KeepAlive(scene);
+        AddChild(node);
+        node.Free();
+    }
+
+    void LoadWithDependency(bool keep)
+    {
+        var scene = (PackedScene)ResourceLoader.Load(SpriteScenePath, "PackedScene", ResourceLoader.CacheMode.Ignore);
+        var sprite = scene.Instantiate<Sprite2D>();
+        GC.KeepAlive(scene);
+        AddChild(sprite);
+        var texture = sprite.Texture;
+        if (keep)
+            keptTexture = texture;
+        _ = texture.GetSize();
+        sprite.Free();
+        scene.Dispose();
     }
 
     static void StartGcThread()
@@ -147,7 +140,7 @@ public partial class Main : Control
         if (gcThread != null)
             return;
 
-        OS.AddLogger(new HandleErrorCounter());
+        OS.AddLogger(new ErrorCounter());
         gcThread = new System.Threading.Thread(() =>
         {
             while (true)
@@ -164,13 +157,13 @@ public partial class Main : Control
         gcThread.Start();
     }
 
-    // Godot catches the exception at the native boundary and logs it, so count it there
-    partial class HandleErrorCounter : Logger
+    // Godot catches exceptions at the native boundary and logs them, so count them there. Run from the editor, it sends them to
+    // the debugger instead (ExceptionUtils.LogException), past every logger, so nothing is counted then
+    partial class ErrorCounter : Logger
     {
         public override void _LogError(string function, string file, int line, string code, string rationale, bool editorNotify, int errorType, Godot.Collections.Array<ScriptBacktrace> scriptBacktraces)
         {
-            if ((rationale + code).Contains("Handle is not initialized"))
-                System.Threading.Interlocked.Increment(ref handleErrorsLogged);
+            System.Threading.Interlocked.Increment(ref errorsLogged);
         }
     }
 
@@ -185,23 +178,17 @@ public partial class Main : Control
         var box = new VBoxContainer();
         margin.AddChild(box);
 
-        box.AddChild(new Label { Text = "Instantiate() on an uncached PackedScene (run an export, see README.md). Fixed in Godot 4.8 beta 2: before that, AOT crashed on the first click, and a regular (JIT) export after a few clicks, once the code was optimized", AutowrapMode = TextServer.AutowrapMode.WordSmart });
-        AddButton(box, "Instantiate without GC.KeepAlive (crashed before 4.8 beta 2)", () => Run(keepAlive: false));
-        AddButton(box, "Instantiate with GC.KeepAlive (works, however often you click)", () => Run(keepAlive: true));
-
-        box.AddChild(new Label { Text = "Loading a cached PackedScene (CacheMode.Reuse) over and over, under GC stress (still fails in 4.8 beta 2)", AutowrapMode = TextServer.AutowrapMode.WordSmart });
-        AddButton(box, "Load without keeping a reference (\"Handle is not initialized\", may abort)", () => StartReuse(keepAlive: false));
-        AddButton(box, "Load while keeping a reference (works)", () => StartReuse(keepAlive: true));
+        box.AddChild(new Label { Text = "Each runs for 20 s under GC stress (see README.md)", AutowrapMode = TextServer.AutowrapMode.WordSmart });
+        foreach (var repro in Repros)
+        {
+            var button = new Button { Text = $"{repro.Name}: {repro.Description}" };
+            var captured = repro;
+            button.Pressed += () => Start(captured);
+            box.AddChild(button);
+        }
 
         output = new RichTextLabel { SizeFlagsVertical = SizeFlags.ExpandFill, ScrollFollowing = true };
         box.AddChild(output);
-    }
-
-    static void AddButton(Container parent, string text, Action action)
-    {
-        var button = new Button { Text = text };
-        button.Pressed += action;
-        parent.AddChild(button);
     }
 
     void Log(string text)

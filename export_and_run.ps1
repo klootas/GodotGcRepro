@@ -1,8 +1,9 @@
-# Exports the project with AOT and runs both repros headless, without and with the workaround.
-# Usage: .\export_and_run.ps1 -GodotExe "C:\Path\To\Godot_v4.8-beta2_mono_win64.exe" [-SkipExport]
+# Exports the project with AOT and runs the repros headless, without and with the workarounds.
+# Usage: .\export_and_run.ps1 -GodotExe "C:\Path\To\Godot_v4.8-beta3_mono_win64.exe" [-SkipExport]
 param(
     [Parameter(Mandatory = $true)][string]$GodotExe,
-    [switch]$SkipExport
+    [switch]$SkipExport,
+    [string[]]$Repros = @('reuse', 'reuse-keepalive', 'dependency', 'dependency-keepalive')
 )
 
 Set-Location $PSScriptRoot
@@ -28,7 +29,4 @@ function Run-Repro($name) {
     Get-Content "Export\$name.out.txt", "Export\$name.err.txt" | Where-Object { $_ -ne "" } | Select-Object -Last 8 | ForEach-Object { Write-Host "   $_" }
 }
 
-Run-Repro instantiate
-Run-Repro instantiate-keepalive
-Run-Repro reuse
-Run-Repro reuse-keepalive
+foreach ($repro in $Repros) { Run-Repro $repro }
